@@ -3,4 +3,4 @@ The README is in the [gh-pages](https://github.com/capitalone/Hygieia/blob/gh-pa
 
 **GitHub actions**
 - Build
-- Build and publish docker images from tags to https://hub.docker.com/r/vaibhawj/hygieia-gitlab-deploy/tags
+- Build and publish docker images from tags to https://hub.docker.com/r/thoughtworksindia/hygieia-gitlab-deploy/tags
