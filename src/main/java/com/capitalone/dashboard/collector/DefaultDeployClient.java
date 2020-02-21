@@ -3,7 +3,9 @@ package com.capitalone.dashboard.collector;
 import com.capitalone.dashboard.model.*;
 import com.capitalone.dashboard.repository.*;
 import com.capitalone.dashboard.util.Supplier;
+import org.apache.commons.collections4.CollectionUtils;
 import org.bson.types.ObjectId;
+import org.joda.time.DateTime;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -143,7 +145,7 @@ public class DefaultDeployClient implements DeployClient {
             //We might have to iterate over pipelines
             ResponseEntity<String> deploymentResponse = makeRestCall(
                     application.getInstanceUrl(),
-                    new String[]{GITLAB_PROJECT_API_SUFFIX, DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum)},apiKey);
+                    new String[]{GITLAB_PROJECT_API_SUFFIX, DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum)}, apiKey);
             log("****** Inside getEnvironmentComponentsWithPagination, pageNum " + pageNum);
             for (Object item : paresAsArray(deploymentResponse)) {
                 JSONObject jsonObject = (JSONObject) item;
@@ -219,13 +221,17 @@ public class DefaultDeployClient implements DeployClient {
             commitIds.add((String) o);
         }
         List<Commit> commits = commitIds.stream()
-                .flatMap(cId -> commitRepository.findByScmRevisionNumber(cId).stream())
+                .flatMap(cId -> fetchCommit(cId, application).stream())
                 .filter(Objects::nonNull)
                 .filter(c -> c.getScmParentRevisionNumbers().size() > 1) //Take only merge commits
                 .collect(Collectors.toList());
 
         if (commits.size() > 0) {
-            List<Dashboard> allDashboardsForCommit = findAllDashboardsForCommit(commits.get(0)); //Find the team dashboard which contains the SCM collector for this commit
+            Optional<Commit> commitsWithCollectorItems = commits.stream().filter(c -> c.getCollectorItemId() != null).findFirst();
+            if (!commitsWithCollectorItems.isPresent()) {
+                return;
+            }
+            List<Dashboard> allDashboardsForCommit = findAllDashboardsForCommit(commitsWithCollectorItems.get()); //Find the team dashboard which contains the SCM collector for this commit
 
             List<Collector> collectorList = collectorRepository.findAllByCollectorType(CollectorType.Product); //Get a Product collector
             List<CollectorItem> collectorItemList = collectorItemRepository
@@ -251,6 +257,45 @@ public class DefaultDeployClient implements DeployClient {
                 }
             }
         }
+    }
+
+    private List<Commit> fetchCommit(String cId, DeployApplication application) {
+
+        List<Commit> commits = commitRepository.findByScmRevisionNumber(cId);
+        if (commits != null && commits.size() > 0) {
+            return commits;
+        }
+        return Collections.singletonList(getCommit(cId, application.getInstanceUrl(), application.getApplicationId()));
+    }
+
+
+    private Commit getCommit(String commitId, String instanceUrl, String projectId) {
+        log(String.format("Fetching commit %s from Gitlab API since it was not found in the mongo commit collection", commitId));
+        ResponseEntity<GitLabCommit> response = makeRestCall(instanceUrl, new String[]{GITLAB_PROJECT_API_SUFFIX,
+                projectId, "/repository/commits/", commitId}, gitlabSettings.getProjectKey(projectId), GitLabCommit.class);
+        GitLabCommit gitlabCommit = response.getBody();
+        if (gitlabCommit == null) {
+            return null;
+        }
+
+        long timestamp = new DateTime(gitlabCommit.getCreatedAt()).getMillis();
+        int parentSize = CollectionUtils.isNotEmpty(gitlabCommit.getParentIds()) ? gitlabCommit.getParentIds().size() : 0;
+        CommitType commitType = parentSize > 1 ? CommitType.Merge : CommitType.New;
+
+        String web_url = gitlabCommit.getLastPipeline().getWeb_url();
+        String repo_url = web_url.split("/pipelines")[0];
+        Commit commit = new Commit();
+        commit.setTimestamp(System.currentTimeMillis());
+        commit.setScmUrl(repo_url);
+        commit.setScmBranch(gitlabCommit.getLastPipeline().getRef());
+        commit.setScmRevisionNumber(gitlabCommit.getId());
+        commit.setScmAuthor(gitlabCommit.getAuthorName());
+        commit.setScmCommitLog(gitlabCommit.getMessage());
+        commit.setScmCommitTimestamp(timestamp);
+        commit.setNumberOfChanges(1);
+        commit.setScmParentRevisionNumbers(gitlabCommit.getParentIds());
+        commit.setType(commitType);
+        return commit;
     }
 
     private boolean isDeployed(String deployStatus) {
@@ -491,17 +536,23 @@ public class DefaultDeployClient implements DeployClient {
 
     private ResponseEntity<String> makeRestCall(String instanceUrl,
                                                 String[] endpoint,String apiKey) {
+        return makeRestCall(instanceUrl, endpoint, apiKey, String.class);
+    }
+
+    private<T> ResponseEntity<T> makeRestCall(String instanceUrl,
+                                                String[] endpoint, String apiKey, Class<T> responseClazz) {
 
         String url = joinURL(instanceUrl, endpoint);
 
         UriComponentsBuilder thisUrl =
                 UriComponentsBuilder.fromHttpUrl(url);
 
-        ResponseEntity<String> response = null;
+        ResponseEntity<T> response = null;
         try {
             log("Calling -> " + thisUrl.toUriString());
             response = restOperations.exchange(thisUrl.toUriString(), HttpMethod.GET,
-                    new HttpEntity<>(createHeaders(apiKey)), String.class);
+                    new HttpEntity<>(createHeaders(apiKey)), responseClazz);
+
 
         } catch (RestClientException re) {
             LOGGER.error("Error with REST url: " + url);
