@@ -68,8 +68,9 @@ public class DefaultDeployClient implements DeployClient {
         List<DeployApplication> applications = new ArrayList<>();
 
         for (String projectId : gitlabSettings.getProjectIds()) {
+          final String apiKey = gitlabSettings.getProjectKey(projectId);
             JSONObject jsonObject = parseAsJsonObject(makeRestCall(instanceUrl, new String[]{GITLAB_PROJECT_API_SUFFIX,
-                    projectId}));
+                    projectId}, apiKey));
             DeployApplication application = new DeployApplication();
             String appID = str(jsonObject, "id");
 //            application.setInstanceUrl(joinURL(instanceUrl, new String[]{GITLAB_PROJECT_API_SUFFIX, appID}));
@@ -97,9 +98,10 @@ public class DefaultDeployClient implements DeployClient {
     public List<Environment> getEnvironments(DeployApplication application) {
         List<Environment> environments = new ArrayList<>();
         String url = application.getApplicationId() + "/environments";
+        final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
 
         for (Object item : paresAsArray(makeRestCall(
-                application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, url}))) {
+                application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, url},apiKey))) {
             JSONObject jsonObject = (JSONObject) item;
             environments.add(new Environment(str(jsonObject, "id"), str(
                     jsonObject, "name")));
@@ -135,12 +137,13 @@ public class DefaultDeployClient implements DeployClient {
             /* environment represents a job that we're interested in, say "Deploy to Dev"*/int pageNum) {
         List<EnvironmentComponent> components = new ArrayList<>();
         String environmentUrl = application.getApplicationId() + "/environments";
+        final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
 
         try {
             //We might have to iterate over pipelines
             ResponseEntity<String> deploymentResponse = makeRestCall(
                     application.getInstanceUrl(),
-                    new String[]{GITLAB_PROJECT_API_SUFFIX, DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum)});
+                    new String[]{GITLAB_PROJECT_API_SUFFIX, DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum)},apiKey);
             log("****** Inside getEnvironmentComponentsWithPagination, pageNum " + pageNum);
             for (Object item : paresAsArray(deploymentResponse)) {
                 JSONObject jsonObject = (JSONObject) item;
@@ -280,7 +283,8 @@ public class DefaultDeployClient implements DeployClient {
         List<DeployEnvResCompData> environmentStatuses = new ArrayList<>();
 
         String deploymentsUrl = application.getApplicationId() + DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum);
-        ResponseEntity<String> inventoryResponse = makeRestCall(application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, deploymentsUrl});
+        final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
+        ResponseEntity<String> inventoryResponse = makeRestCall(application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, deploymentsUrl},apiKey);
 
         JSONArray allDeploymentJSON = paresAsArray(inventoryResponse);
 
@@ -376,8 +380,9 @@ public class DefaultDeployClient implements DeployClient {
                 String resourceId = str(topParent, "id");
 
                 String urlResources = "resource/resource/" + resourceId + "/resources";
+                final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
 
-                ResponseEntity<String> resourceResponse = makeRestCall(application.getInstanceUrl(), new String[]{urlResources});
+                ResponseEntity<String> resourceResponse = makeRestCall(application.getInstanceUrl(), new String[]{urlResources},apiKey);
 
                 JSONArray resourceListJSON = paresAsArray(resourceResponse);
 
@@ -395,8 +400,10 @@ public class DefaultDeployClient implements DeployClient {
     private List<String> getPhysicalFileList(DeployApplication application, JSONObject versionObject) {
         List<String> list = new ArrayList<>();
         String fileTreeUrl = "deploy/version/" + str(versionObject, "id") + "/fileTree";
+        final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
+
         ResponseEntity<String> fileTreeResponse = makeRestCall(
-                application.getInstanceUrl(), new String[]{fileTreeUrl});
+                application.getInstanceUrl(), new String[]{fileTreeUrl},apiKey);
         JSONArray fileTreeJson = paresAsArray(fileTreeResponse);
         for (Object f : fileTreeJson) {
             JSONObject fileJson = (JSONObject) f;
@@ -483,21 +490,18 @@ public class DefaultDeployClient implements DeployClient {
     // ////// Helpers
 
     private ResponseEntity<String> makeRestCall(String instanceUrl,
-                                                String[] endpoint) {
+                                                String[] endpoint,String apiKey) {
 
         String url = joinURL(instanceUrl, endpoint);
 
-        UriComponentsBuilder thisuri =
+        UriComponentsBuilder thisUrl =
                 UriComponentsBuilder.fromHttpUrl(url);
-
-
-        String token = this.gitlabSettings.getApiKeys().get(0);
 
         ResponseEntity<String> response = null;
         try {
-            log("Calling -> " + thisuri.toUriString());
-            response = restOperations.exchange(thisuri.toUriString(), HttpMethod.GET,
-                    new HttpEntity<>(createHeaders(token)), String.class);
+            log("Calling -> " + thisUrl.toUriString());
+            response = restOperations.exchange(thisUrl.toUriString(), HttpMethod.GET,
+                    new HttpEntity<>(createHeaders(apiKey)), String.class);
 
         } catch (RestClientException re) {
             LOGGER.error("Error with REST url: " + url);
