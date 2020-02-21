@@ -3,7 +3,9 @@ package com.capitalone.dashboard.collector;
 import com.capitalone.dashboard.model.*;
 import com.capitalone.dashboard.repository.*;
 import com.capitalone.dashboard.util.Supplier;
+import org.apache.commons.collections4.CollectionUtils;
 import org.bson.types.ObjectId;
+import org.joda.time.DateTime;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -68,7 +70,7 @@ public class DefaultDeployClient implements DeployClient {
         List<DeployApplication> applications = new ArrayList<>();
 
         for (String projectId : gitlabSettings.getProjectIds()) {
-          final String apiKey = gitlabSettings.getProjectKey(projectId);
+            final String apiKey = gitlabSettings.getProjectKey(projectId);
             JSONObject jsonObject = parseAsJsonObject(makeRestCall(instanceUrl, new String[]{GITLAB_PROJECT_API_SUFFIX,
                     projectId}, apiKey));
             DeployApplication application = new DeployApplication();
@@ -101,7 +103,7 @@ public class DefaultDeployClient implements DeployClient {
         final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
 
         for (Object item : paresAsArray(makeRestCall(
-                application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, url},apiKey))) {
+                application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, url}, apiKey))) {
             JSONObject jsonObject = (JSONObject) item;
             environments.add(new Environment(str(jsonObject, "id"), str(
                     jsonObject, "name")));
@@ -132,8 +134,7 @@ public class DefaultDeployClient implements DeployClient {
     }
 
     @SuppressWarnings("PMD.AvoidCatchingNPE")
-    public List<EnvironmentComponent> getEnvironmentComponentsWithPagination(
-            DeployApplication application, Environment environment,
+    public List<EnvironmentComponent> getEnvironmentComponentsWithPagination(DeployApplication application, Environment environment,
             /* environment represents a job that we're interested in, say "Deploy to Dev"*/int pageNum) {
         List<EnvironmentComponent> components = new ArrayList<>();
         String environmentUrl = application.getApplicationId() + "/environments";
@@ -143,7 +144,7 @@ public class DefaultDeployClient implements DeployClient {
             //We might have to iterate over pipelines
             ResponseEntity<String> deploymentResponse = makeRestCall(
                     application.getInstanceUrl(),
-                    new String[]{GITLAB_PROJECT_API_SUFFIX, DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum)},apiKey);
+                    new String[]{GITLAB_PROJECT_API_SUFFIX, DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum)}, apiKey);
             log("****** Inside getEnvironmentComponentsWithPagination, pageNum " + pageNum);
             for (Object item : paresAsArray(deploymentResponse)) {
                 JSONObject jsonObject = (JSONObject) item;
@@ -152,26 +153,11 @@ public class DefaultDeployClient implements DeployClient {
 //                        .get("version");
                 JSONObject deployableObject = (JSONObject) jsonObject
                         .get("deployable");
-                //Skip deployments that are simply "created" or "cancelled".
-                //Created deployments are never triggered. So there is no point in considering them
+
                 if (!isDeployed(str(deployableObject, "status"))) continue;
 
                 EnvironmentComponent component = new EnvironmentComponent();
-                component.setEnvironmentID(environment.getId());
-                component.setEnvironmentName(environment.getName());
-                component.setEnvironmentUrl(joinURL(application.getInstanceUrl(),
-                        new String[]{GITLAB_PROJECT_API_SUFFIX,
-                                environmentUrl,
-                                environment.getId()}));
-                component.setComponentID(str(deployableObject, "id"));
-                component.setComponentName(str(deployableObject, "name"));
-//                component.setComponentVersion(str(versionObject, "name"));
-                component.setDeployed(true);
-
-                long deployTimeToConsider = getTime(deployableObject, "finished_at");
-                component.setDeployTime(deployTimeToConsider == 0 ? getTime(deployableObject, "created_at")
-                        : deployTimeToConsider);
-                component.setAsOfDate(System.currentTimeMillis());
+                long deployTimeToConsider = getEnvComponent(application, environment, environmentUrl, deployableObject, component);
 
                 JSONObject environmentObject = (JSONObject) deployableObject.get("environment");
                 processPipelineCommits(application, deployableObject, environmentObject, deployTimeToConsider);
@@ -185,27 +171,52 @@ public class DefaultDeployClient implements DeployClient {
         return components;
     }
 
+    private long getEnvComponent(DeployApplication application, Environment environment, String environmentUrl, JSONObject deployableObject, EnvironmentComponent component) {
+        component.setEnvironmentID(environment.getId());
+        component.setEnvironmentName(environment.getName());
+        component.setEnvironmentUrl(joinURL(application.getInstanceUrl(),
+                new String[]{GITLAB_PROJECT_API_SUFFIX,
+                        environmentUrl,
+                        environment.getId()}));
+        component.setComponentID(str(deployableObject, "id"));
+        component.setComponentName(str(deployableObject, "name"));
+//                component.setComponentVersion(str(versionObject, "name"));
+        component.setDeployed(true);
+
+        long deployTimeToConsider = getTime(deployableObject, "finished_at");
+        component.setDeployTime(deployTimeToConsider == 0 ? getTime(deployableObject, "created_at")
+                : deployTimeToConsider);
+        component.setAsOfDate(System.currentTimeMillis());
+        return deployTimeToConsider;
+    }
+
     /**
      * Finds or creates a pipeline for a dashboard collectoritem
+     *
      * @param collectorItem
      * @return
      */
     protected Pipeline getOrCreatePipeline(CollectorItem collectorItem) {
         Pipeline pipeline = pipelineRepository.findByCollectorItemId(collectorItem.getId());
-        if(pipeline == null){
+        if (pipeline == null) {
             pipeline = new Pipeline();
             pipeline.setCollectorItemId(collectorItem.getId());
         }
         return pipeline;
     }
 
-    private List<Dashboard> findAllDashboardsForCommit(Commit commit) {
-        if (commit.getCollectorItemId() == null) return new ArrayList<>();
-        CollectorItem commitCollectorItem = collectorItemRepository.findOne(commit.getCollectorItemId()); //Find the SCM collector which collected this commit
-        List<com.capitalone.dashboard.model.Component> components = componentRepository
-                .findBySCMCollectorItemId(commitCollectorItem.getId()); //Find the component of the SCM collector - will mostly resolve to a Team dashboard component
-        List<ObjectId> componentIds = components.stream().map(BaseModel::getId).collect(Collectors.toList());
-        return dashboardRepository.findByApplicationComponentIdsIn(componentIds); //Find the dashboard for the above component
+    private List<String> findAllDashboardIds(ObjectId id) {
+        List<String> dashBoardIds = new ArrayList<>();
+        List<CollectorItem> collectorItems = collectorItemRepository.findByCollectorIdIn(Collections.singletonList(id));
+        if (collectorItems != null && collectorItems.size() > 0) {
+            CollectorItem collectorItem = collectorItems.get(0);//Find the SCM collector which collected this commit
+            List<com.capitalone.dashboard.model.Component> components = componentRepository
+                    .findByDeployCollectorItemId(collectorItem.getId()); //Find the component of the SCM collector - will mostly resolve to a Team dashboard component
+            List<ObjectId> componentIds = components.stream().map(BaseModel::getId).collect(Collectors.toList());
+            List<Dashboard> allDashboardsForCommit = dashboardRepository.findByApplicationComponentIdsIn(componentIds);
+            dashBoardIds = allDashboardsForCommit.stream().map(d -> d.getId().toString()).collect(Collectors.toList());
+        }
+        return dashBoardIds;
     }
 
     private void processPipelineCommits(DeployApplication application, JSONObject deployableObject, JSONObject environmentObject, long timestamp) {
@@ -218,22 +229,35 @@ public class DefaultDeployClient implements DeployClient {
         for (Object o : (JSONArray) commitObject.get("parent_ids")) {
             commitIds.add((String) o);
         }
-        List<Commit> commits = commitIds.stream()
-                .flatMap(cId -> commitRepository.findByScmRevisionNumber(cId).stream())
-                .filter(Objects::nonNull)
-                .filter(c -> c.getScmParentRevisionNumbers().size() > 1) //Take only merge commits
-                .collect(Collectors.toList());
 
+        List<Commit> commits = new ArrayList<>();
+        if (commitIds.size() > 0) {
+            commitIds.forEach(commitId -> {
+                List<Commit> matchedCommits = commitRepository.findByScmRevisionNumber(commitId);
+                Commit newCommit;
+                if (matchedCommits != null && matchedCommits.size() > 0) {
+                    newCommit = matchedCommits.get(0);
+                } else {
+                    newCommit = getCommit(commitId, application.getInstanceUrl(), application.getApplicationId());
+                }
+                List<String> parentRevisionNumbers = newCommit != null ? newCommit.getScmParentRevisionNumbers() : null;
+                /* Extract only merge commits */
+                if (parentRevisionNumbers != null && !parentRevisionNumbers.isEmpty() && parentRevisionNumbers.size() > 1) {
+                    commits.add(newCommit);
+                }
+            });
+        }
+
+        saveToPipelines(application, timestamp, commits);
+    }
+
+    private void saveToPipelines(DeployApplication application, long timestamp, List<Commit> commits) {
         if (commits.size() > 0) {
-            List<Dashboard> allDashboardsForCommit = findAllDashboardsForCommit(commits.get(0)); //Find the team dashboard which contains the SCM collector for this commit
+            List<String> dashBoardIds = findAllDashboardIds(application.getCollectorId());
 
-            List<Collector> collectorList = collectorRepository.findAllByCollectorType(CollectorType.Product); //Get a Product collector
-            List<CollectorItem> collectorItemList = collectorItemRepository
-                    .findByCollectorIdIn(collectorList.stream().map(BaseModel::getId)
-                            .collect(Collectors.toList())); //Find the collector item for the product dashboard
+            List<CollectorItem> collectorItemList = getCollectorItems();
 
             for (CollectorItem collectorItem : collectorItemList) {
-                List<String> dashBoardIds = allDashboardsForCommit.stream().map(d -> d.getId().toString()).collect(Collectors.toList());
                 boolean dashboardId = dashBoardIds.contains(collectorItem.getOptions().get("dashboardId").toString());
                 if (dashboardId) { //If the product dashboard and team dashboard match
                     Pipeline pipeline = getOrCreatePipeline(collectorItem);
@@ -253,7 +277,56 @@ public class DefaultDeployClient implements DeployClient {
         }
     }
 
+    private List<CollectorItem> getCollectorItems() {
+        List<Collector> collectorList = collectorRepository.findAllByCollectorType(CollectorType.Product); //Get a Product collector
+        return collectorItemRepository
+                .findByCollectorIdIn(collectorList.stream().map(BaseModel::getId)
+                        .collect(Collectors.toList()));
+    }
+
+    private Commit getCommit(String commitId, String instanceUrl, String applicationId) {
+        String url = joinURL(instanceUrl, new String[]{String.format("%s/%s", GITLAB_PROJECT_API_SUFFIX, applicationId), "repository/commits", commitId});
+        final String apiKey = gitlabSettings.getProjectKey(applicationId);
+        ResponseEntity<GitLabCommit> response = makeCommitRestCall(url, apiKey);
+
+        GitLabCommit gitlabCommit = response.getBody();
+        if (gitlabCommit == null) {
+            return null;
+        }
+
+        long timestamp = new DateTime(gitlabCommit.getCreatedAt()).getMillis();
+        int parentSize = CollectionUtils.isNotEmpty(gitlabCommit.getParentIds()) ? gitlabCommit.getParentIds().size() : 0;
+        CommitType commitType = parentSize > 1 ? CommitType.Merge : CommitType.New;
+
+        String web_url = gitlabCommit.getLastPipeline().getWeb_url();
+        String repo_url = web_url.split("/pipelines")[0];
+        return getCommit(gitlabCommit, timestamp, commitType, repo_url);
+    }
+
+    private Commit getCommit(GitLabCommit gitlabCommit, long timestamp, CommitType commitType, String repo_url) {
+        Commit commit = new Commit();
+        commit.setTimestamp(System.currentTimeMillis());
+        commit.setScmUrl(repo_url);
+        commit.setScmBranch(gitlabCommit.getLastPipeline().getRef());
+        commit.setScmRevisionNumber(gitlabCommit.getId());
+        commit.setScmAuthor(gitlabCommit.getAuthorName());
+        commit.setScmCommitLog(gitlabCommit.getMessage());
+        commit.setScmCommitTimestamp(timestamp);
+        commit.setNumberOfChanges(1);
+        commit.setScmParentRevisionNumbers(gitlabCommit.getParentIds());
+        commit.setType(commitType);
+        return commit;
+    }
+
+    private ResponseEntity<GitLabCommit> makeCommitRestCall(String url, String apiKey) {
+        return restOperations.exchange(url, HttpMethod.GET,
+                new HttpEntity<>(createHeaders(apiKey)), GitLabCommit.class);
+    }
+
+
     private boolean isDeployed(String deployStatus) {
+        //Skip deployments that are simply "created" or "cancelled".
+        //Created deployments are never triggered. So there is no point in considering them
         return deployStatus != null && !deployStatus.isEmpty() && deployStatus.equalsIgnoreCase("success");
     }
 
@@ -284,7 +357,7 @@ public class DefaultDeployClient implements DeployClient {
 
         String deploymentsUrl = application.getApplicationId() + DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum);
         final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
-        ResponseEntity<String> inventoryResponse = makeRestCall(application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, deploymentsUrl},apiKey);
+        ResponseEntity<String> inventoryResponse = makeRestCall(application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, deploymentsUrl}, apiKey);
 
         JSONArray allDeploymentJSON = paresAsArray(inventoryResponse);
 
@@ -382,7 +455,7 @@ public class DefaultDeployClient implements DeployClient {
                 String urlResources = "resource/resource/" + resourceId + "/resources";
                 final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
 
-                ResponseEntity<String> resourceResponse = makeRestCall(application.getInstanceUrl(), new String[]{urlResources},apiKey);
+                ResponseEntity<String> resourceResponse = makeRestCall(application.getInstanceUrl(), new String[]{urlResources}, apiKey);
 
                 JSONArray resourceListJSON = paresAsArray(resourceResponse);
 
@@ -403,7 +476,7 @@ public class DefaultDeployClient implements DeployClient {
         final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
 
         ResponseEntity<String> fileTreeResponse = makeRestCall(
-                application.getInstanceUrl(), new String[]{fileTreeUrl},apiKey);
+                application.getInstanceUrl(), new String[]{fileTreeUrl}, apiKey);
         JSONArray fileTreeJson = paresAsArray(fileTreeResponse);
         for (Object f : fileTreeJson) {
             JSONObject fileJson = (JSONObject) f;
@@ -490,7 +563,7 @@ public class DefaultDeployClient implements DeployClient {
     // ////// Helpers
 
     private ResponseEntity<String> makeRestCall(String instanceUrl,
-                                                String[] endpoint,String apiKey) {
+                                                String[] endpoint, String apiKey) {
 
         String url = joinURL(instanceUrl, endpoint);
 
@@ -568,6 +641,7 @@ public class DefaultDeployClient implements DeployClient {
             return 0L;
         }
     }
+
     private long getTime(JSONObject buildJson, String jsonField) {
 
         String dateToConsider = getString(buildJson, jsonField);
@@ -575,10 +649,11 @@ public class DefaultDeployClient implements DeployClient {
             return Instant.from(DateTimeFormatter
                     .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSz")
                     .parse(getString(buildJson, jsonField))).toEpochMilli();
-        } else{
+        } else {
             return 0L;
         }
     }
+
     private String getString(JSONObject json, String key) {
         return (String) json.get(key);
     }
