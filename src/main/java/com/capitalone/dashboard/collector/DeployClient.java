@@ -25,15 +25,6 @@ public interface DeployClient {
     List<Environment> getEnvironments(DeployApplication application);
 
     /**
-     * Fetches all {@link EnvironmentComponent}s for a given {@link DeployApplication} and {@link Environment}.
-     *
-     * @param application a {@link DeployApplication}
-     * @param environment an {@link Environment}
-     * @return list of {@link EnvironmentComponent}s
-     */
-    List<EnvironmentComponent> getEnvironmentComponents(DeployApplication application, Environment environment);
-
-    /**
      * Fetches all {@link EnvironmentStatus}es for a given {@link DeployApplication} and {@link Environment}.
      *
      * @param application a {@link DeployApplication}
