@@ -111,85 +111,6 @@ public class DefaultDeployClient implements DeployClient {
         return environments;
     }
 
-    //DeployApplication --> Deploy project
-    //Environment --> A job that represents a deployment
-    //We'll hard code the above items.
-    //EnvironmentComponent --> An actual deployment, i.e. an instance of a deployment
-    @Override
-    public List<EnvironmentComponent> getEnvironmentComponents(
-            DeployApplication application, Environment environment
-            /* environment represents a job that we're interested in, say "Deploy to Dev"*/) {
-        List<EnvironmentComponent> allComponents = new ArrayList<>();
-        int nextPage = 1;
-        while (true) {
-            List<EnvironmentComponent> components =
-                    getEnvironmentComponentsWithPagination(application, environment, nextPage);
-            if (components.isEmpty()) {
-                break;
-            }
-            allComponents.addAll(components);
-            ++nextPage;
-        }
-        return allComponents;
-    }
-
-    @SuppressWarnings("PMD.AvoidCatchingNPE")
-    public List<EnvironmentComponent> getEnvironmentComponentsWithPagination(DeployApplication application, Environment environment,
-            /* environment represents a job that we're interested in, say "Deploy to Dev"*/int pageNum) {
-        List<EnvironmentComponent> components = new ArrayList<>();
-        String environmentUrl = application.getApplicationId() + "/environments";
-        final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
-
-        try {
-            //We might have to iterate over pipelines
-            ResponseEntity<String> deploymentResponse = makeRestCall(
-                    application.getInstanceUrl(),
-                    new String[]{GITLAB_PROJECT_API_SUFFIX, DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum)}, apiKey);
-            log("****** Inside getEnvironmentComponentsWithPagination, pageNum " + pageNum);
-            for (Object item : paresAsArray(deploymentResponse)) {
-                JSONObject jsonObject = (JSONObject) item;
-
-//                JSONObject versionObject = (JSONObject) jsonObject
-//                        .get("version");
-                JSONObject deployableObject = (JSONObject) jsonObject
-                        .get("deployable");
-
-                if (!isDeployed(str(deployableObject, "status"))) continue;
-
-                EnvironmentComponent component = new EnvironmentComponent();
-                long deployTimeToConsider = getEnvComponent(application, environment, environmentUrl, deployableObject, component);
-
-                JSONObject environmentObject = (JSONObject) deployableObject.get("environment");
-                processPipelineCommits(application, deployableObject, environmentObject, deployTimeToConsider);
-
-                components.add(component);
-            }
-        } catch (NullPointerException npe) {
-            LOGGER.info("No Environment data found, No components deployed");
-        }
-
-        return components;
-    }
-
-    private long getEnvComponent(DeployApplication application, Environment environment, String environmentUrl, JSONObject deployableObject, EnvironmentComponent component) {
-        component.setEnvironmentID(environment.getId());
-        component.setEnvironmentName(environment.getName());
-        component.setEnvironmentUrl(joinURL(application.getInstanceUrl(),
-                new String[]{GITLAB_PROJECT_API_SUFFIX,
-                        environmentUrl,
-                        environment.getId()}));
-        component.setComponentID(str(deployableObject, "id"));
-        component.setComponentName(str(deployableObject, "name"));
-//                component.setComponentVersion(str(versionObject, "name"));
-        component.setDeployed(true);
-
-        long deployTimeToConsider = getTime(deployableObject, "finished_at");
-        component.setDeployTime(deployTimeToConsider == 0 ? getTime(deployableObject, "created_at")
-                : deployTimeToConsider);
-        component.setAsOfDate(System.currentTimeMillis());
-        return deployTimeToConsider;
-    }
-
     /**
      * Finds or creates a pipeline for a dashboard collectoritem
      *
@@ -219,7 +140,7 @@ public class DefaultDeployClient implements DeployClient {
         return dashBoardIds;
     }
 
-    private void processPipelineCommits(DeployApplication application, JSONObject deployableObject, JSONObject environmentObject, long timestamp) {
+    private List<PipelineCommit> getPipelineCommits(DeployApplication application, JSONObject deployableObject, JSONObject environmentObject, long timestamp) {
 
         application.setEnvironment(str(environmentObject, "name"));
         JSONObject commitObject = (JSONObject) deployableObject.get("commit");
@@ -229,29 +150,28 @@ public class DefaultDeployClient implements DeployClient {
         for (Object o : (JSONArray) commitObject.get("parent_ids")) {
             commitIds.add((String) o);
         }
-
-        List<Commit> commits = new ArrayList<>();
-        if (commitIds.size() > 0) {
-            commitIds.forEach(commitId -> {
-                List<Commit> matchedCommits = commitRepository.findByScmRevisionNumber(commitId);
-                Commit newCommit;
-                if (matchedCommits != null && matchedCommits.size() > 0) {
-                    newCommit = matchedCommits.get(0);
-                } else {
-                    newCommit = getCommit(commitId, application.getInstanceUrl(), application.getApplicationId());
-                }
-                List<String> parentRevisionNumbers = newCommit != null ? newCommit.getScmParentRevisionNumbers() : null;
-                /* Extract only merge commits */
-                if (parentRevisionNumbers != null && !parentRevisionNumbers.isEmpty() && parentRevisionNumbers.size() > 1) {
-                    commits.add(newCommit);
-                }
-            });
+        if (commitIds.size() == 0) {
+            return Collections.emptyList();
         }
-
-        saveToPipelines(application, timestamp, commits);
+        List<PipelineCommit> commits = new ArrayList<>();
+        commitIds.forEach(commitId -> {
+            List<Commit> matchedCommits = commitRepository.findByScmRevisionNumber(commitId);
+            Commit newCommit;
+            if (matchedCommits != null && matchedCommits.size() > 0) {
+                newCommit = matchedCommits.get(0);
+            } else {
+                newCommit = getCommit(commitId, application.getInstanceUrl(), application.getApplicationId());
+            }
+            List<String> parentRevisionNumbers = newCommit != null ? newCommit.getScmParentRevisionNumbers() : null;
+            /* Extract only merge commits */
+            if (parentRevisionNumbers != null && !parentRevisionNumbers.isEmpty() && parentRevisionNumbers.size() > 1) {
+                commits.add(new PipelineCommit(newCommit, timestamp));
+            }
+        });
+        return commits;
     }
 
-    private void saveToPipelines(DeployApplication application, long timestamp, List<Commit> commits) {
+    private void saveToPipelines(DeployApplication application, List<PipelineCommit> commits) {
         if (commits.size() > 0) {
             List<String> dashBoardIds = findAllDashboardIds(application.getCollectorId());
 
@@ -270,7 +190,7 @@ public class DefaultDeployClient implements DeployClient {
                     if (environmentStage.getCommits() == null) {
                         environmentStage.setCommits(new HashSet<>());
                     }
-                    environmentStage.getCommits().addAll(commits.stream().map(commit -> new PipelineCommit(commit, timestamp)).collect(Collectors.toSet()));
+                    environmentStage.getCommits().addAll(new LinkedHashSet<>(commits));
                     pipelineRepository.save(pipeline);
                 }
             }
@@ -353,7 +273,6 @@ public class DefaultDeployClient implements DeployClient {
     public List<DeployEnvResCompData> getEnvironmentResourceStatusDataWithPagination(
             DeployApplication application, Environment environment, int pageNum) {
 
-        List<DeployEnvResCompData> environmentStatuses = new ArrayList<>();
 
         String deploymentsUrl = application.getApplicationId() + DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum);
         final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
@@ -361,204 +280,57 @@ public class DefaultDeployClient implements DeployClient {
 
         JSONArray allDeploymentJSON = paresAsArray(inventoryResponse);
 
-        if (allDeploymentJSON != null && allDeploymentJSON.size() > 0) {
-            // Failed to deploy list:
-//			Set<String> failedComponents = getFailedComponents(inventoryJSON);
-//	        Map<String, List<String>> versionFileMap = new HashMap<>();
-            for (Object deployment : allDeploymentJSON) {
-                JSONObject jsonObject = (JSONObject) deployment;
-                if (jsonObject == null) continue;
-
-                JSONObject environmentObj = (JSONObject) jsonObject.get("environment");
-                JSONObject deployableObj = (JSONObject) jsonObject.get("deployable");
-                JSONObject runnerObj = (JSONObject) deployableObj.get("runner");
-
-                if (environmentObj == null || deployableObj == null) continue;
-
-                String environmentID = str(environmentObj, "id");
-
-                if (environmentID == null || (!environmentID.equals(environment.getId()))) continue;
-                //Skip deployments that are simply "created" or "cancelled".
-                //Created deployments are never triggered. So there is no point in considering them
-                if (!isDeployed(str(deployableObj, "status"))) continue;
-
-                DeployEnvResCompData deployData = new DeployEnvResCompData();
-
-                deployData.setCollectorItemId(application.getId());
-                deployData.setEnvironmentName(environment.getName());
-
-                deployData.setComponentID(str(deployableObj, "id"));
-                deployData.setComponentName(application.getApplicationName());
-                deployData.setDeployed(true);
-                deployData.setAsOfDate(System.currentTimeMillis());
-
-                if (runnerObj == null) {
-                    deployData.setOnline(true);
-                    deployData.setResourceName("gitlab-runner");
-                } else {
-                    deployData.setOnline(bool(runnerObj, "online"));
-                    deployData.setResourceName(str(runnerObj, "name"));
-                }
-
-                JSONObject environmentObject = (JSONObject) jsonObject.get("environment");
-
-                long deployTimeToConsider = getTime(deployableObj, "finished_at");
-                processPipelineCommits(application, deployableObj, environmentObject,
-                        deployTimeToConsider == 0 ? getTime(deployableObj, "created_at") : deployTimeToConsider);
-                environmentStatuses.add(deployData);
-//				JSONArray childArray = getResourceComponent(application, jsonObject, new JSONArray());
-//	            if (childArray.isEmpty()) continue;
-//	            for (Object child : childArray) {
-//	                JSONObject childObject = (JSONObject) child;
-//	                JSONArray jsonVersions = (JSONArray) childObject.get("versions");
-//	                if (jsonVersions == null || jsonVersions.size() == 0) continue;
-//	                JSONObject versionObject = (JSONObject) jsonVersions.get(0);
-//	                // get version fileTree and build data.
-//	                List<String> physicalFileNames = versionFileMap.get(str(versionObject, "id"));
-//	                if (CollectionUtils.isEmpty(physicalFileNames)) {
-//	                    physicalFileNames = getPhysicalFileList(application, versionObject);
-//	                    versionFileMap.put(str(versionObject, "id"), physicalFileNames);
-//	                }
-//	                for (String fileName : physicalFileNames) {
-//	                    environmentStatuses.add(buildDeployEnvResCompData(environment, application, versionObject, fileName, childObject, failedComponents));
-//	                }
-//	            }
-            }
+        if (allDeploymentJSON == null || allDeploymentJSON.size() == 0) {
+            return Collections.emptyList();
         }
-        return environmentStatuses;
-    }
+        List<PipelineCommit> allPipelineCommits = new ArrayList<>();
+        List<DeployEnvResCompData> environmentStatuses = new ArrayList<>();
+        for (Object deployment : allDeploymentJSON) {
+            JSONObject jsonObject = (JSONObject) deployment;
+            if (jsonObject == null) continue;
 
-    @SuppressWarnings("unchecked")
-    private JSONArray getResourceComponent(DeployApplication application, JSONObject topParent,
-                                           JSONArray returnArray) {
+            JSONObject environmentObj = (JSONObject) jsonObject.get("environment");
+            JSONObject deployableObj = (JSONObject) jsonObject.get("deployable");
+            JSONObject runnerObj = (JSONObject) deployableObj.get("runner");
 
-        JSONObject resourceRole = (JSONObject) topParent.get("role");
+            if (environmentObj == null || deployableObj == null) continue;
 
-        String resourceSpecialType = null;
+            String environmentID = str(environmentObj, "id");
 
-        if (resourceRole != null) {
-            resourceSpecialType = str(resourceRole, "specialType");
-        }
+            if (environmentID == null || (!environmentID.equals(environment.getId()))) continue;
+            //Skip deployments that are simply "created" or "cancelled".
+            //Created deployments are never triggered. So there is no point in considering them
+            if (!isDeployed(str(deployableObj, "status"))) continue;
 
-        if (resourceSpecialType != null && resourceSpecialType.equalsIgnoreCase("COMPONENT")) {
-            JSONArray jsonVersions = (JSONArray) topParent.get("versions");
+            DeployEnvResCompData deployData = new DeployEnvResCompData();
 
-            if (jsonVersions != null && jsonVersions.size() > 0) {
-                returnArray.add(topParent);
-            }
-        } else {
-            String hasChildren = str(topParent, "hasChildren");
+            deployData.setCollectorItemId(application.getId());
+            deployData.setEnvironmentName(environment.getName());
 
-            if ("true".equalsIgnoreCase(hasChildren)) {
-                String resourceId = str(topParent, "id");
+            deployData.setComponentID(str(deployableObj, "id"));
+            deployData.setComponentName(application.getApplicationName());
+            deployData.setDeployed(true);
+            deployData.setAsOfDate(System.currentTimeMillis());
 
-                String urlResources = "resource/resource/" + resourceId + "/resources";
-                final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
-
-                ResponseEntity<String> resourceResponse = makeRestCall(application.getInstanceUrl(), new String[]{urlResources}, apiKey);
-
-                JSONArray resourceListJSON = paresAsArray(resourceResponse);
-
-                for (Object resourceObject : resourceListJSON) {
-                    JSONObject childJSON = (JSONObject) resourceObject;
-
-                    getResourceComponent(application, childJSON, returnArray);
-                }
-            }
-        }
-
-        return returnArray;
-    }
-
-    private List<String> getPhysicalFileList(DeployApplication application, JSONObject versionObject) {
-        List<String> list = new ArrayList<>();
-        String fileTreeUrl = "deploy/version/" + str(versionObject, "id") + "/fileTree";
-        final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
-
-        ResponseEntity<String> fileTreeResponse = makeRestCall(
-                application.getInstanceUrl(), new String[]{fileTreeUrl}, apiKey);
-        JSONArray fileTreeJson = paresAsArray(fileTreeResponse);
-        for (Object f : fileTreeJson) {
-            JSONObject fileJson = (JSONObject) f;
-            list.add(cleanFileName(str(fileJson, "name"), str(versionObject, "name")));
-        }
-        return list;
-    }
-
-    private Set<String> getFailedComponents(JSONArray environmentInventoryJSON) {
-        HashSet<String> failedComponents = new HashSet<>();
-
-        for (Object inventory : environmentInventoryJSON) {
-            JSONObject inventoryObject = (JSONObject) inventory;
-            JSONObject compliancyObject = (JSONObject) inventoryObject.get("compliancy");
-
-            if (compliancyObject == null)
-                continue;
-
-            long correctCount = date(compliancyObject, "correctCount");
-            long desiredCount = date(compliancyObject, "desiredCount");
-
-            if (correctCount < desiredCount) {
-                JSONObject componentObject = (JSONObject) inventoryObject.get("component");
-                if (componentObject != null) {
-                    failedComponents.add(str(componentObject, "name"));
-                }
-            }
-        }
-
-        return failedComponents;
-    }
-
-    private String cleanFileName(String fileName, String version) {
-        if (fileName.contains("-" + version))
-            return fileName.replace("-" + version, "");
-        if (fileName.contains(version))
-            return fileName.replace(version, "");
-        return fileName;
-    }
-
-    private DeployEnvResCompData buildDeployEnvResCompData(Environment environment, DeployApplication application, JSONObject versionObject, String fileName, JSONObject childObject, Set<String> failedComponents) {
-        DeployEnvResCompData data = new DeployEnvResCompData();
-        data.setEnvironmentName(environment.getName());
-        data.setCollectorItemId(application.getId());
-        data.setComponentVersion(str(versionObject, "name"));
-        data.setAsOfDate(date(versionObject, "created"));
-
-        JSONObject childRole = (JSONObject) childObject.get("role");
-        String childRoleName = str(childRole, "name");
-
-        data.setDeployed(!failedComponents.contains(childRoleName));
-        data.setComponentName(fileName);
-        data.setOnline("ONLINE".equalsIgnoreCase(str(
-                childObject, "status")));
-        JSONObject resource = getParentAgent(childObject);
-        if (resource != null) {
-            data.setResourceName(str(resource, "name"));
-        }
-        return data;
-    }
-
-    public JSONObject getParentAgent(JSONObject childObject) {
-        JSONObject parentAgent = null;
-        String resourceType = null;
-        String hasAgent = null;
-
-        JSONObject parentObject = (JSONObject) childObject.get("parent");
-
-        if (parentObject != null) {
-            resourceType = str(parentObject, "type");
-            hasAgent = str(parentObject, "hasAgent");
-
-            if (resourceType != null && resourceType.equalsIgnoreCase("agent")) {
-                parentAgent = parentObject;
+            if (runnerObj == null) {
+                deployData.setOnline(true);
+                deployData.setResourceName("gitlab-runner");
             } else {
-                if ("true".equalsIgnoreCase(hasAgent)) {
-                    parentAgent = getParentAgent(parentObject);
-                }
+                deployData.setOnline(bool(runnerObj, "online"));
+                deployData.setResourceName(str(runnerObj, "name"));
             }
-        }
 
-        return parentAgent;
+            JSONObject environmentObject = (JSONObject) jsonObject.get("environment");
+
+            long deployTimeToConsider = getTime(deployableObj, "finished_at");
+            List<PipelineCommit> pipelineCommits = getPipelineCommits(application, deployableObj, environmentObject,
+                    deployTimeToConsider == 0 ? getTime(deployableObj, "created_at") : deployTimeToConsider);
+            allPipelineCommits.addAll(pipelineCommits);
+            environmentStatuses.add(deployData);
+        }
+        saveToPipelines(application, allPipelineCommits);
+
+        return environmentStatuses;
     }
     // ////// Helpers
 
@@ -624,22 +396,6 @@ public class DefaultDeployClient implements DeployClient {
     private String str(JSONObject json, String key) {
         Object value = json.get(key);
         return value == null ? null : value.toString();
-    }
-
-    private long date(JSONObject jsonObject, String key) {
-        Object value = jsonObject.get(key);
-        return value == null ? 0 : (long) value;
-    }
-
-    private long getTime(String dateToConsider) {
-
-        if (dateToConsider != null) {
-            return Instant.from(DateTimeFormatter
-                    .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSz")
-                    .parse(dateToConsider)).toEpochMilli();
-        } else {
-            return 0L;
-        }
     }
 
     private long getTime(JSONObject buildJson, String jsonField) {
