@@ -68,7 +68,7 @@ gitlab.usernames[0]=${GITLAB_USERNAME}
 gitlab.projectIds=${GITLAB_PROJECT_IDS}
 
 # A comma seperated list of api token corresponding to the project id mentioned above
-gitlab.apiKeys=${GITLAB_API_TOKEN}
+gitlab.apiKeys=${GITLAB_API_TOKENS}
 
 # Determines if build console log is collected - defaults to false
 gitlab.saveLog=true
