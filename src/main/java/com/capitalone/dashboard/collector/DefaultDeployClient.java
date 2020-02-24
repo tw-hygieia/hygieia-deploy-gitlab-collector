@@ -345,6 +345,7 @@ public class DefaultDeployClient implements DeployClient {
         ResponseEntity<String> response = null;
         try {
             log("Calling -> " + thisUrl.toUriString());
+            if(!apiKey.isEmpty())
             response = restOperations.exchange(thisUrl.toUriString(), HttpMethod.GET,
                     new HttpEntity<>(createHeaders(apiKey)), String.class);
 
