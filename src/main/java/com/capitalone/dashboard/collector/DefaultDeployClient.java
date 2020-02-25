@@ -220,7 +220,11 @@ public class DefaultDeployClient implements DeployClient {
         int parentSize = CollectionUtils.isNotEmpty(gitlabCommit.getParentIds()) ? gitlabCommit.getParentIds().size() : 0;
         CommitType commitType = parentSize > 1 ? CommitType.Merge : CommitType.New;
 
-        String web_url = gitlabCommit.getLastPipeline().getWeb_url();
+        LastPipeline lastPipeline = gitlabCommit.getLastPipeline();
+        if (lastPipeline == null) {
+            return null;
+        }
+        String web_url = lastPipeline.getWeb_url();
         String repo_url = web_url.split("/pipelines")[0];
         return getCommit(gitlabCommit, timestamp, commitType, repo_url);
     }
