@@ -128,17 +128,24 @@ public class DefaultDeployClient implements DeployClient {
         return pipeline;
     }
 
-    private List<String> findAllDashboardIds(ObjectId id) {
-        List<String> dashBoardIds = new ArrayList<>();
-        List<CollectorItem> collectorItems = collectorItemRepository.findByCollectorIdIn(Collections.singletonList(id));
-        if (collectorItems != null && collectorItems.size() > 0) {
-            CollectorItem collectorItem = collectorItems.get(0);//Find the SCM collector which collected this commit
-            List<com.capitalone.dashboard.model.Component> components = componentRepository
-                    .findByDeployCollectorItemId(collectorItem.getId()); //Find the component of the SCM collector - will mostly resolve to a Team dashboard component
-            List<ObjectId> componentIds = components.stream().map(BaseModel::getId).collect(Collectors.toList());
-            List<Dashboard> allDashboardsForCommit = dashboardRepository.findByApplicationComponentIdsIn(componentIds);
-            dashBoardIds = allDashboardsForCommit.stream().map(d -> d.getId().toString()).collect(Collectors.toList());
+    private List<String> findAllDashboardIds(DeployApplication application) {
+        List<CollectorItem> collectorItems = collectorItemRepository
+                .findByCollectorIdIn(Collections.singletonList(application.getCollectorId()));
+        if (collectorItems == null || collectorItems.size() == 0) {
+            return Collections.emptyList();
         }
+        Optional<CollectorItem> collectorItemOptional =
+                collectorItems.stream().filter(item ->
+                        application.getApplicationId().equals(item.getOptions().get("applicationId"))).findFirst();
+        if (!collectorItemOptional.isPresent()) {
+            return Collections.emptyList();
+        }
+        CollectorItem collectorItem = collectorItemOptional.get();//Find the SCM collector which collected this commit
+        List<com.capitalone.dashboard.model.Component> components = componentRepository
+                .findByDeployCollectorItemId(collectorItem.getId()); //Find the component of the SCM collector - will mostly resolve to a Team dashboard component
+        List<ObjectId> componentIds = components.stream().map(BaseModel::getId).collect(Collectors.toList());
+        List<Dashboard> allDashboardsForCommit = dashboardRepository.findByApplicationComponentIdsIn(componentIds);
+        List<String> dashBoardIds = allDashboardsForCommit.stream().map(d -> d.getId().toString()).collect(Collectors.toList());
         return dashBoardIds;
     }
 
@@ -174,27 +181,28 @@ public class DefaultDeployClient implements DeployClient {
     }
 
     private void saveToPipelines(DeployApplication application, List<PipelineCommit> commits) {
-        if (commits.size() > 0) {
-            List<String> dashBoardIds = findAllDashboardIds(application.getCollectorId());
+        if (commits.size() == 0) {
+            return;
+        }
+        List<String> dashBoardIds = findAllDashboardIds(application);
 
-            List<CollectorItem> collectorItemList = getCollectorItems();
+        List<CollectorItem> collectorItemList = getCollectorItems();
 
-            for (CollectorItem collectorItem : collectorItemList) {
-                boolean dashboardId = dashBoardIds.contains(collectorItem.getOptions().get("dashboardId").toString());
-                if (dashboardId) { //If the product dashboard and team dashboard match
-                    Pipeline pipeline = getOrCreatePipeline(collectorItem);
-                    Map<String, EnvironmentStage> environmentStageMap = pipeline.getEnvironmentStageMap();
-                    if (environmentStageMap.get(application.getEnvironment()) == null) {
-                        environmentStageMap.put(application.getEnvironment(), new EnvironmentStage());
-                    }
-
-                    EnvironmentStage environmentStage = environmentStageMap.get(application.getEnvironment());
-                    if (environmentStage.getCommits() == null) {
-                        environmentStage.setCommits(new HashSet<>());
-                    }
-                    environmentStage.getCommits().addAll(new LinkedHashSet<>(commits));
-                    pipelineRepository.save(pipeline);
+        for (CollectorItem collectorItem : collectorItemList) {
+            boolean dashboardId = dashBoardIds.contains(collectorItem.getOptions().get("dashboardId").toString());
+            if (dashboardId) { //If the product dashboard and team dashboard match
+                Pipeline pipeline = getOrCreatePipeline(collectorItem);
+                Map<String, EnvironmentStage> environmentStageMap = pipeline.getEnvironmentStageMap();
+                if (environmentStageMap.get(application.getEnvironment()) == null) {
+                    environmentStageMap.put(application.getEnvironment(), new EnvironmentStage());
                 }
+
+                EnvironmentStage environmentStage = environmentStageMap.get(application.getEnvironment());
+                if (environmentStage.getCommits() == null) {
+                    environmentStage.setCommits(new HashSet<>());
+                }
+                environmentStage.getCommits().addAll(new LinkedHashSet<>(commits));
+                pipelineRepository.save(pipeline);
             }
         }
     }
