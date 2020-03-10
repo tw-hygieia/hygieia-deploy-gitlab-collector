@@ -36,6 +36,7 @@ public class DeploySettings {
 
     @Value("${gitlab.readTimeout:20000}")
     private int readTimeout;
+    private int firstRunHistoryDays;
 
     public String getCron() {
         return cron;
@@ -119,5 +120,13 @@ public class DeploySettings {
                 .mapToObj(index -> getApiKeys().get(index))
                 .findFirst()
                 .orElse("");
+    }
+
+    public int getFirstRunHistoryDays() {
+        return firstRunHistoryDays;
+    }
+
+    public void setFirstRunHistoryDays(int firstRunHistoryDays) {
+        this.firstRunHistoryDays = firstRunHistoryDays;
     }
 }

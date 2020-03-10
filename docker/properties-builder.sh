@@ -81,6 +81,8 @@ gitlab.searchFields[1]= niceName
 gitlab.connectTimeout=20000
 gitlab.readTimeout=20000
 
+gitlab.firstRunHistoryDays=${GITLAB_COMMIT_THRESHOLD_DAYS:-100}
+
 EOF
 
 echo "
