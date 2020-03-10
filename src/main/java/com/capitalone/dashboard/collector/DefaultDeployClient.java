@@ -22,9 +22,13 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestOperations;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import java.time.Instant;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.time.*;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static com.sun.activation.registries.LogSupport.log;
@@ -286,9 +290,9 @@ public class DefaultDeployClient implements DeployClient {
 
     public List<DeployEnvResCompData> getEnvironmentResourceStatusDataWithPagination(
             DeployApplication application, Environment environment, int pageNum) {
-
-
-        String deploymentsUrl = application.getApplicationId() + DEPLOYMENTS_URL_WITH_SORT + String.format("&page=%d", pageNum);
+        String deploymentsUrl = String.format("%s%s&page=%d&updated_after=%s", application.getApplicationId(),
+                DEPLOYMENTS_URL_WITH_SORT,
+                pageNum, getDeploymentThresholdTime());
         final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
         ResponseEntity<String> inventoryResponse = makeRestCall(application.getInstanceUrl(), new String[]{GITLAB_PROJECT_API_SUFFIX, deploymentsUrl}, apiKey);
 
@@ -348,6 +352,12 @@ public class DefaultDeployClient implements DeployClient {
         return environmentStatuses;
     }
 
+    private String getDeploymentThresholdTime() {
+        return DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmX")
+                .withZone(ZoneOffset.UTC).format
+                        (Instant.now().minus(gitlabSettings.getFirstRunHistoryDays(), ChronoUnit.DAYS));
+    }
+
     private List<PipelineCommit> fillIntermediateCommits(DeployApplication application, List<PipelineCommit> allPipelineCommits) {
         int size = allPipelineCommits.size();
         List<PipelineCommit> allPipelineCommitsWithIntermediateCommits = new ArrayList<>();
@@ -357,9 +367,26 @@ public class DefaultDeployClient implements DeployClient {
             PipelineCommit thisCommit = allPipelineCommits.get(currentIndex);
             String range = rangePrefix + thisCommit.getScmRevisionNumber();
             List<PipelineCommit> intermediateCommits = fetchIntermediateCommits(application, range, thisCommit);
-            allPipelineCommitsWithIntermediateCommits.addAll(intermediateCommits);
+            List<PipelineCommit> dateFilteredIntermediateCommits = intermediateCommits
+                    .stream().filter(NDaysCommits()).collect(Collectors.toList());
+            if (dateFilteredIntermediateCommits.isEmpty()) {
+                //No more commits to consider
+                break;
+            }
+            allPipelineCommitsWithIntermediateCommits.addAll(dateFilteredIntermediateCommits);
         }
         return allPipelineCommitsWithIntermediateCommits;
+    }
+
+    private Predicate<PipelineCommit> NDaysCommits() {
+        return c -> {
+            LocalDate commitDate =
+                    Instant.ofEpochMilli(c.getScmCommitTimestamp()).atZone(ZoneId.systemDefault()).toLocalDate();
+            LocalDate currentDate = LocalDate.now();
+            long elapsedDays = Duration.between(commitDate.atTime(0, 0),
+                    currentDate.atTime(0, 0)).toDays();
+            return elapsedDays <= gitlabSettings.getFirstRunHistoryDays();
+        };
     }
 
     private List<PipelineCommit> fetchIntermediateCommits(DeployApplication application, String range, PipelineCommit baseCommit) {
