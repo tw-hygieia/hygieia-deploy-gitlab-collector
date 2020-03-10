@@ -383,8 +383,9 @@ public class DefaultDeployClient implements DeployClient {
             LocalDate commitDate =
                     Instant.ofEpochMilli(c.getScmCommitTimestamp()).atZone(ZoneId.systemDefault()).toLocalDate();
             LocalDate currentDate = LocalDate.now();
-            return Duration.between(commitDate.atTime(0, 0),
-                    currentDate.atTime(0, 0)).toDays() <= gitlabSettings.getFirstRunHistoryDays();
+            long elapsedDays = Duration.between(commitDate.atTime(0, 0),
+                    currentDate.atTime(0, 0)).toDays();
+            return elapsedDays <= gitlabSettings.getFirstRunHistoryDays();
         };
     }
 
