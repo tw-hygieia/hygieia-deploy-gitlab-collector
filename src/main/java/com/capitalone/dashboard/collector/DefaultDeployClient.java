@@ -201,10 +201,22 @@ public class DefaultDeployClient implements DeployClient {
                     environmentStageMap.put(application.getEnvironment(), new EnvironmentStage());
                 }
 
+                HashSet<PipelineCommit> allPipelineCommits = new HashSet<>();
+                EnvironmentStage commitStage = environmentStageMap.get(PipelineStage.COMMIT.getName());
+
+                if(commitStage != null && commits.size() > 0) {
+                    for (PipelineCommit commit : commits) {
+                        List<PipelineCommit> intermediateCommits = commitStage.getCommits().stream()
+                                .filter(c -> c.getScmParentRevisionNumbers().size() > 1 && c.getTimestamp() < commit.getTimestamp()).collect(Collectors.toList());
+                        allPipelineCommits.addAll(intermediateCommits);
+                    }
+                }
+
                 EnvironmentStage environmentStage = environmentStageMap.get(application.getEnvironment());
                 if (environmentStage.getCommits() == null) {
                     environmentStage.setCommits(new HashSet<>());
                 }
+                environmentStage.getCommits().addAll(new LinkedHashSet<>(allPipelineCommits));
                 environmentStage.getCommits().addAll(new LinkedHashSet<>(commits));
                 pipelineRepository.save(pipeline);
             }
@@ -346,9 +358,7 @@ public class DefaultDeployClient implements DeployClient {
             allPipelineCommits.addAll(pipelineCommits);
             environmentStatuses.add(deployData);
         }
-        List<PipelineCommit> allPipelineCommitsWithIntermediateCommits = fillIntermediateCommits(application,
-                new ArrayList<>(allPipelineCommits));
-        saveToPipelines(application, allPipelineCommitsWithIntermediateCommits);
+        saveToPipelines(application, new ArrayList<>(allPipelineCommits));
         return environmentStatuses;
     }
 
@@ -356,26 +366,6 @@ public class DefaultDeployClient implements DeployClient {
         return DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmX")
                 .withZone(ZoneOffset.UTC).format
                         (Instant.now().minus(gitlabSettings.getFirstRunHistoryDays(), ChronoUnit.DAYS));
-    }
-
-    private List<PipelineCommit> fillIntermediateCommits(DeployApplication application, List<PipelineCommit> allPipelineCommits) {
-        int size = allPipelineCommits.size();
-        List<PipelineCommit> allPipelineCommitsWithIntermediateCommits = new ArrayList<>();
-        for (int currentIndex = 0; currentIndex < size; ++currentIndex) {
-            String rangePrefix = (currentIndex + 1 < size) ? String.format("%s..",
-                    allPipelineCommits.get(currentIndex + 1).getScmRevisionNumber()) : "";
-            PipelineCommit thisCommit = allPipelineCommits.get(currentIndex);
-            String range = rangePrefix + thisCommit.getScmRevisionNumber();
-            List<PipelineCommit> intermediateCommits = fetchIntermediateCommits(application, range, thisCommit);
-            List<PipelineCommit> dateFilteredIntermediateCommits = intermediateCommits
-                    .stream().filter(NDaysCommits()).collect(Collectors.toList());
-            if (dateFilteredIntermediateCommits.isEmpty()) {
-                //No more commits to consider
-                break;
-            }
-            allPipelineCommitsWithIntermediateCommits.addAll(dateFilteredIntermediateCommits);
-        }
-        return allPipelineCommitsWithIntermediateCommits;
     }
 
     private Predicate<PipelineCommit> NDaysCommits() {
@@ -389,50 +379,6 @@ public class DefaultDeployClient implements DeployClient {
         };
     }
 
-    private List<PipelineCommit> fetchIntermediateCommits(DeployApplication application, String range, PipelineCommit baseCommit) {
-        String commitsUrl = application.getApplicationId() + COMMITS_URL_WITH_SORT + range; //TODO: PAGINATION
-        final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
-        ResponseEntity<String> commitsResponse = makeRestCall(application.getInstanceUrl(),
-                new String[]{GITLAB_PROJECT_API_SUFFIX, commitsUrl}, apiKey);
-        JSONArray jsonArray = paresAsArray(commitsResponse);
-        List<PipelineCommit> pipelineCommits = new ArrayList<>();
-        for (Object object : jsonArray) {
-            JSONObject jsonObject = (JSONObject) object;
-            JSONArray parentIdsArray = (JSONArray) jsonObject.get("parent_ids");
-            if (parentIdsArray.size() <= 1) {
-                // Donot process non-merge commits
-                // TODO make it configurable
-                continue;
-            }
-            String commitId = (String) jsonObject.get("id");
-            List<Commit> scmCommits = commitRepository.findByScmRevisionNumber(commitId);
-            Commit commit;
-            if (scmCommits != null && scmCommits.size() > 0) {
-                //Get the first commit and construct a pipelineCommit
-                commit = scmCommits.get(0);
-            } else {
-                //Construct from REST response
-                commit = new Commit();
-                commit.setTimestamp(System.currentTimeMillis());
-                commit.setScmUrl(baseCommit.getScmUrl());
-                commit.setScmBranch(baseCommit.getScmBranch());
-                commit.setScmRevisionNumber((String) jsonObject.get("id"));
-                commit.setScmAuthor((String) jsonObject.get("author_name"));
-                commit.setScmCommitLog((String) jsonObject.get("message"));
-                long timestamp = new DateTime(jsonObject.get("committed_date")).getMillis();
-                commit.setScmCommitTimestamp(timestamp);
-                ArrayList<String> parentRevisions = new ArrayList<>();
-                ((JSONArray) jsonObject.get("parent_ids")).forEach(parentId -> {
-                    parentRevisions.add((String) parentId);
-                });
-                commit.setScmParentRevisionNumbers(parentRevisions);
-                commit.setNumberOfChanges(1);
-                commit.setType(parentRevisions.size() > 1? CommitType.Merge: CommitType.New);
-            }
-            pipelineCommits.add(new PipelineCommit(commit, baseCommit.getTimestamp()));
-        }
-        return pipelineCommits;
-    }
     // ////// Helpers
 
     private ResponseEntity<String> makeRestCall(String instanceUrl,
