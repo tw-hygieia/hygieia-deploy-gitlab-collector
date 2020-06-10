@@ -152,7 +152,7 @@ public class DefaultDeployClient implements DeployClient {
         return dashBoardIds;
     }
 
-    private List<PipelineCommit> getPipelineCommits(DeployApplication application, JSONObject deployableObject, JSONObject environmentObject, long timestamp) {
+    private List<PipelineCommit> getPipelineCommitsBackup(DeployApplication application, JSONObject deployableObject, JSONObject environmentObject, long timestamp) {
 
         application.setEnvironment(str(environmentObject, "name"));
         JSONObject commitObject = (JSONObject) deployableObject.get("commit");
@@ -181,6 +181,23 @@ public class DefaultDeployClient implements DeployClient {
             }
         });
         return commits;
+    }
+
+
+    private PipelineCommit getPipelineCommits(DeployApplication application, JSONObject deployableObject, JSONObject environmentObject, long timestamp) {
+
+        application.setEnvironment(str(environmentObject, "name"));
+        JSONObject commitObject = (JSONObject) deployableObject.get("commit");
+
+        String commitId = str(commitObject, "id");
+        List<Commit> matchedCommits = commitRepository.findByScmRevisionNumber(commitId);
+        Commit newCommit;
+        if (matchedCommits != null && matchedCommits.size() > 0) {
+            newCommit = matchedCommits.get(0);
+        } else {
+            newCommit = getCommit(commitId, application.getInstanceUrl(), application.getApplicationId());
+        }
+        return new PipelineCommit(newCommit, timestamp);
     }
 
     private void saveToPipelines(DeployApplication application, List<PipelineCommit> commits) {
@@ -339,9 +356,9 @@ public class DefaultDeployClient implements DeployClient {
             JSONObject environmentObject = (JSONObject) jsonObject.get("environment");
 
             long deployTimeToConsider = getTime(deployableObj, "finished_at");
-            List<PipelineCommit> pipelineCommits = getPipelineCommits(application, deployableObj, environmentObject,
+            PipelineCommit pipelineCommits = getPipelineCommits(application, deployableObj, environmentObject,
                     deployTimeToConsider == 0 ? getTime(deployableObj, "created_at") : deployTimeToConsider);
-            allPipelineCommits.addAll(pipelineCommits);
+            allPipelineCommits.add(pipelineCommits);
             environmentStatuses.add(deployData);
         }
         List<PipelineCommit> allPipelineCommitsWithIntermediateCommits = fillIntermediateCommits(application,
@@ -397,12 +414,6 @@ public class DefaultDeployClient implements DeployClient {
         List<PipelineCommit> pipelineCommits = new ArrayList<>();
         for (Object object : jsonArray) {
             JSONObject jsonObject = (JSONObject) object;
-            JSONArray parentIdsArray = (JSONArray) jsonObject.get("parent_ids");
-            if (parentIdsArray.size() <= 1) {
-                // Donot process non-merge commits
-                // TODO make it configurable
-                continue;
-            }
             String commitId = (String) jsonObject.get("id");
             List<Commit> scmCommits = commitRepository.findByScmRevisionNumber(commitId);
             Commit commit;
@@ -434,7 +445,7 @@ public class DefaultDeployClient implements DeployClient {
     }
 
     private JSONArray getCommitsForAllPages(DeployApplication application, PipelineCommit currentCommit, String previousCommitTimeStamp, JSONArray allCommmits, int page) {
-        String range = "&page="+ page +"&since=" + previousCommitTimeStamp
+        String range = "&ref_name=master&page="+ page +"&since=" + previousCommitTimeStamp
                 + "&until=" + new ISO8601DateFormat().format(currentCommit.getScmCommitTimestamp());
         String commitsUrl = application.getApplicationId() + COMMITS_URL_WITH_SORT + range; //TODO: PAGINATION
 
