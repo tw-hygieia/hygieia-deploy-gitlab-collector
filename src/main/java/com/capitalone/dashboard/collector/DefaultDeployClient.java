@@ -46,6 +46,7 @@ public class DefaultDeployClient implements DeployClient {
     private final CollectorRepository collectorRepository;
     private final ComponentRepository componentRepository;
     private final DashboardRepository dashboardRepository;
+    private final PipelineCommitProcessor pipelineCommitProcessor;
 
     private static final String GITLAB_API_SUFFIX = "/api/v4";
     private static final String GITLAB_PROJECT_API_SUFFIX = String.format("%s/%s", GITLAB_API_SUFFIX, "projects");
@@ -58,7 +59,7 @@ public class DefaultDeployClient implements DeployClient {
                                CommitRepository commitRepository,
                                PipelineRepository pipelineRepository,
                                CollectorItemRepository collectorItemRepository,
-                               CollectorRepository collectorRepository, ComponentRepository componentRepository, DashboardRepository dashboardRepository) {
+                               CollectorRepository collectorRepository, ComponentRepository componentRepository, DashboardRepository dashboardRepository, PipelineCommitProcessor pipelineCommitProcessor) {
         this.gitlabSettings = gitlabSettings;
         this.restOperations = restOperationsSupplier.get();
         this.commitRepository = commitRepository;
@@ -67,6 +68,7 @@ public class DefaultDeployClient implements DeployClient {
         this.collectorItemRepository = collectorItemRepository;
         this.componentRepository = componentRepository;
         this.dashboardRepository = dashboardRepository;
+        this.pipelineCommitProcessor = pipelineCommitProcessor;
     }
 
     //Fetches the list of Project
@@ -334,9 +336,15 @@ public class DefaultDeployClient implements DeployClient {
             }
             environmentStatuses.add(deployData);
         }
-        List<PipelineCommit> allPipelineCommitsWithIntermediateCommits = fillIntermediateCommits(application,
-                new ArrayList<>(allPipelineCommits));
-        saveToPipelines(application, allPipelineCommitsWithIntermediateCommits);
+
+        pipelineCommitProcessor.processPipelineCommits(new ArrayList<>(allPipelineCommits),
+                application);
+//
+//
+//
+//        List<PipelineCommit> allPipelineCommitsWithIntermediateCommits = fillIntermediateCommits(application,
+//                new ArrayList<>(allPipelineCommits));
+//        saveToPipelines(application, allPipelineCommitsWithIntermediateCommits);
         return environmentStatuses;
     }
 
