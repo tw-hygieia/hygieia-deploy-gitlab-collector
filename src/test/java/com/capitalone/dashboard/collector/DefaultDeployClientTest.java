@@ -43,7 +43,7 @@ public class DefaultDeployClientTest {
     @Before
     public void init() {
         when(restOperationsSupplier.get()).thenReturn(rest);
-        defaultDeployClient = new DefaultDeployClient(settings, restOperationsSupplier, null, null, null, null, null, null, null);
+        defaultDeployClient = new DefaultDeployClient(settings, restOperationsSupplier, null, null);
     }
     @Test
     public void testGetApplications() throws Exception {

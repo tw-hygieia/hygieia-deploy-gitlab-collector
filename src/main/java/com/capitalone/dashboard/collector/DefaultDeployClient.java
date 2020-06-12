@@ -3,9 +3,7 @@ package com.capitalone.dashboard.collector;
 import com.capitalone.dashboard.model.*;
 import com.capitalone.dashboard.repository.*;
 import com.capitalone.dashboard.util.Supplier;
-import com.fasterxml.jackson.databind.util.ISO8601DateFormat;
 import org.apache.commons.collections4.CollectionUtils;
-import org.bson.types.ObjectId;
 import org.joda.time.DateTime;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
@@ -27,8 +25,6 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 import static com.sun.activation.registries.LogSupport.log;
 
@@ -36,38 +32,24 @@ import static com.sun.activation.registries.LogSupport.log;
 public class DefaultDeployClient implements DeployClient {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultDeployClient.class);
     private static final int DEPLOYMENTS_PAGE_SIZE = 100;
-    private static final int COMMITS_PAGE_SIZE = 100;
 
     private final DeploySettings gitlabSettings;
     private final RestOperations restOperations;
     private final CommitRepository commitRepository;
-    private final PipelineRepository pipelineRepository;
-    private final CollectorItemRepository collectorItemRepository;
-    private final CollectorRepository collectorRepository;
-    private final ComponentRepository componentRepository;
-    private final DashboardRepository dashboardRepository;
     private final PipelineCommitProcessor pipelineCommitProcessor;
 
     private static final String GITLAB_API_SUFFIX = "/api/v4";
     private static final String GITLAB_PROJECT_API_SUFFIX = String.format("%s/%s", GITLAB_API_SUFFIX, "projects");
     private static final String DEPLOYMENTS_URL_WITH_SORT = "/deployments?per_page=" + DEPLOYMENTS_PAGE_SIZE + "&order_by=created_at&sort=desc";
-    private static final String COMMITS_URL_WITH_SORT = "/repository/commits?per_page=" + COMMITS_PAGE_SIZE;
 
     @Autowired
     public DefaultDeployClient(DeploySettings gitlabSettings,
                                Supplier<RestOperations> restOperationsSupplier,
                                CommitRepository commitRepository,
-                               PipelineRepository pipelineRepository,
-                               CollectorItemRepository collectorItemRepository,
-                               CollectorRepository collectorRepository, ComponentRepository componentRepository, DashboardRepository dashboardRepository, PipelineCommitProcessor pipelineCommitProcessor) {
+                               PipelineCommitProcessor pipelineCommitProcessor) {
         this.gitlabSettings = gitlabSettings;
         this.restOperations = restOperationsSupplier.get();
         this.commitRepository = commitRepository;
-        this.pipelineRepository = pipelineRepository;
-        this.collectorRepository = collectorRepository;
-        this.collectorItemRepository = collectorItemRepository;
-        this.componentRepository = componentRepository;
-        this.dashboardRepository = dashboardRepository;
         this.pipelineCommitProcessor = pipelineCommitProcessor;
     }
 
@@ -118,42 +100,6 @@ public class DefaultDeployClient implements DeployClient {
         return environments;
     }
 
-    /**
-     * Finds or creates a pipeline for a dashboard collectoritem
-     *
-     * @param collectorItem
-     * @return
-     */
-    protected Pipeline getOrCreatePipeline(CollectorItem collectorItem) {
-        Pipeline pipeline = pipelineRepository.findByCollectorItemId(collectorItem.getId());
-        if (pipeline == null) {
-            pipeline = new Pipeline();
-            pipeline.setCollectorItemId(collectorItem.getId());
-        }
-        return pipeline;
-    }
-
-    private List<String> findAllDashboardIds(DeployApplication application) {
-        List<CollectorItem> collectorItems = collectorItemRepository
-                .findByCollectorIdIn(Collections.singletonList(application.getCollectorId()));
-        if (collectorItems == null || collectorItems.size() == 0) {
-            return Collections.emptyList();
-        }
-        Optional<CollectorItem> collectorItemOptional =
-                collectorItems.stream().filter(item ->
-                        application.getApplicationId().equals(item.getOptions().get("applicationId"))).findFirst();
-        if (!collectorItemOptional.isPresent()) {
-            return Collections.emptyList();
-        }
-        CollectorItem collectorItem = collectorItemOptional.get();//Find the SCM collector which collected this commit
-        List<com.capitalone.dashboard.model.Component> components = componentRepository
-                .findByDeployCollectorItemId(collectorItem.getId()); //Find the component of the SCM collector - will mostly resolve to a Team dashboard component
-        List<ObjectId> componentIds = components.stream().map(BaseModel::getId).collect(Collectors.toList());
-        List<Dashboard> allDashboardsForCommit = dashboardRepository.findByApplicationComponentIdsIn(componentIds);
-        List<String> dashBoardIds = allDashboardsForCommit.stream().map(d -> d.getId().toString()).collect(Collectors.toList());
-        return dashBoardIds;
-    }
-
     private PipelineCommit getPipelineCommit(DeployApplication application, JSONObject deployableObject, JSONObject environmentObject, long timestamp) {
 
         application.setEnvironment(str(environmentObject, "name"));
@@ -171,40 +117,6 @@ public class DefaultDeployClient implements DeployClient {
             return null;
         }
         return new PipelineCommit(newCommit, timestamp);
-    }
-
-    private void saveToPipelines(DeployApplication application, List<PipelineCommit> commits) {
-        if (commits.size() == 0) {
-            return;
-        }
-        List<String> dashBoardIds = findAllDashboardIds(application);
-
-        List<CollectorItem> collectorItemList = getCollectorItems();
-
-        for (CollectorItem collectorItem : collectorItemList) {
-            boolean dashboardId = dashBoardIds.contains(collectorItem.getOptions().get("dashboardId").toString());
-            if (dashboardId) { //If the product dashboard and team dashboard match
-                Pipeline pipeline = getOrCreatePipeline(collectorItem);
-                Map<String, EnvironmentStage> environmentStageMap = pipeline.getEnvironmentStageMap();
-                if (environmentStageMap.get(application.getEnvironment()) == null) {
-                    environmentStageMap.put(application.getEnvironment(), new EnvironmentStage());
-                }
-
-                EnvironmentStage environmentStage = environmentStageMap.get(application.getEnvironment());
-                if (environmentStage.getCommits() == null) {
-                    environmentStage.setCommits(new HashSet<>());
-                }
-                environmentStage.getCommits().addAll(new LinkedHashSet<>(commits));
-                pipelineRepository.save(pipeline);
-            }
-        }
-    }
-
-    private List<CollectorItem> getCollectorItems() {
-        List<Collector> collectorList = collectorRepository.findAllByCollectorType(CollectorType.Product); //Get a Product collector
-        return collectorItemRepository
-                .findByCollectorIdIn(collectorList.stream().map(BaseModel::getId)
-                        .collect(Collectors.toList()));
     }
 
     private Commit getCommit(String commitId, String instanceUrl, String applicationId) {
@@ -339,12 +251,6 @@ public class DefaultDeployClient implements DeployClient {
 
         pipelineCommitProcessor.processPipelineCommits(new ArrayList<>(allPipelineCommits),
                 application);
-//
-//
-//
-//        List<PipelineCommit> allPipelineCommitsWithIntermediateCommits = fillIntermediateCommits(application,
-//                new ArrayList<>(allPipelineCommits));
-//        saveToPipelines(application, allPipelineCommitsWithIntermediateCommits);
         return environmentStatuses;
     }
 
@@ -353,93 +259,6 @@ public class DefaultDeployClient implements DeployClient {
                 .withZone(ZoneOffset.UTC).format
                         (Instant.now().minus(gitlabSettings.getFirstRunHistoryDays(), ChronoUnit.DAYS));
     }
-
-    private List<PipelineCommit> fillIntermediateCommits(DeployApplication application, List<PipelineCommit> allPipelineCommits) {
-        allPipelineCommits.sort(Comparator.comparing(SCM::getScmCommitTimestamp).reversed());
-        List<PipelineCommit> allPipelineCommitsWithIntermediateCommits = new ArrayList<>();
-
-        for (int currentIndex = 0; currentIndex < allPipelineCommits.size(); currentIndex++) {
-            LocalDateTime firstRunHistoryDays = LocalDateTime.now().minusDays(gitlabSettings.getFirstRunHistoryDays());
-            List<PipelineCommit> intermediateCommits;
-            if(currentIndex == allPipelineCommits.size() - 1) {
-                intermediateCommits = fetchIntermediateCommits(application,  allPipelineCommits.get(currentIndex),  firstRunHistoryDays.toString());
-            } else {
-                String previousCommitTimeStamp = new ISO8601DateFormat().format(allPipelineCommits.get(currentIndex + 1).getScmCommitTimestamp());
-                intermediateCommits = fetchIntermediateCommits(application,  allPipelineCommits.get(currentIndex),  previousCommitTimeStamp);
-            }
-            List<PipelineCommit> dateFilteredIntermediateCommits = intermediateCommits
-                    .stream().filter(NDaysCommits()).collect(Collectors.toList());
-            if (dateFilteredIntermediateCommits.isEmpty()) {
-                //No more commits to consider
-                break;
-            }
-            allPipelineCommitsWithIntermediateCommits.addAll(dateFilteredIntermediateCommits);
-        }
-        return allPipelineCommitsWithIntermediateCommits;
-    }
-
-    private Predicate<PipelineCommit> NDaysCommits() {
-        return c -> {
-            LocalDate commitDate =
-                    Instant.ofEpochMilli(c.getScmCommitTimestamp()).atZone(ZoneId.systemDefault()).toLocalDate();
-            LocalDate currentDate = LocalDate.now();
-            long elapsedDays = Duration.between(commitDate.atTime(0, 0),
-                    currentDate.atTime(0, 0)).toDays();
-            return elapsedDays <= gitlabSettings.getFirstRunHistoryDays();
-        };
-    }
-
-    private List<PipelineCommit> fetchIntermediateCommits(DeployApplication application, PipelineCommit currentCommit, String previousCommitTimeStamp) {
-        JSONArray jsonArray = getCommitsForAllPages(application, currentCommit, previousCommitTimeStamp, new JSONArray(), 1);
-        List<PipelineCommit> pipelineCommits = new ArrayList<>();
-        for (Object object : jsonArray) {
-            JSONObject jsonObject = (JSONObject) object;
-            String commitId = (String) jsonObject.get("id");
-            List<Commit> scmCommits = commitRepository.findByScmRevisionNumber(commitId);
-            Commit commit;
-            if (scmCommits != null && scmCommits.size() > 0) {
-                //Get the first commit and construct a pipelineCommit
-                commit = scmCommits.get(0);
-            } else {
-                //Construct from REST response
-                commit = new Commit();
-                commit.setTimestamp(System.currentTimeMillis());
-                commit.setScmUrl(currentCommit.getScmUrl());
-                commit.setScmBranch(currentCommit.getScmBranch());
-                commit.setScmRevisionNumber((String) jsonObject.get("id"));
-                commit.setScmAuthor((String) jsonObject.get("author_name"));
-                commit.setScmCommitLog((String) jsonObject.get("message"));
-                long timestamp = new DateTime(jsonObject.get("committed_date")).getMillis();
-                commit.setScmCommitTimestamp(timestamp);
-                ArrayList<String> parentRevisions = new ArrayList<>();
-                ((JSONArray) jsonObject.get("parent_ids")).forEach(parentId -> {
-                    parentRevisions.add((String) parentId);
-                });
-                commit.setScmParentRevisionNumbers(parentRevisions);
-                commit.setNumberOfChanges(1);
-                commit.setType(parentRevisions.size() > 1? CommitType.Merge: CommitType.New);
-            }
-            pipelineCommits.add(new PipelineCommit(commit, currentCommit.getTimestamp()));
-        }
-        return pipelineCommits;
-    }
-
-    private JSONArray getCommitsForAllPages(DeployApplication application, PipelineCommit currentCommit, String previousCommitTimeStamp, JSONArray allCommmits, int page) {
-        String range = "&ref_name=master&page="+ page +"&since=" + previousCommitTimeStamp
-                + "&until=" + new ISO8601DateFormat().format(currentCommit.getScmCommitTimestamp());
-        String commitsUrl = application.getApplicationId() + COMMITS_URL_WITH_SORT + range; //TODO: PAGINATION
-
-        final String apiKey = gitlabSettings.getProjectKey(application.getApplicationId());
-        ResponseEntity<String> commitsResponse =  makeRestCall(application.getInstanceUrl(),
-                new String[]{GITLAB_PROJECT_API_SUFFIX, commitsUrl}, apiKey);
-        JSONArray commitsInCurrentPage = paresAsArray(commitsResponse);
-        allCommmits.addAll(commitsInCurrentPage);
-        if(commitsResponse.getHeaders() != null && !commitsResponse.getHeaders().get("X-Next-Page").get(0).equals("")) {
-            getCommitsForAllPages(application, currentCommit, previousCommitTimeStamp, allCommmits, page+1);
-        }
-        return allCommmits;
-    }
-
 
     private ResponseEntity<String> makeRestCall(String instanceUrl,
                                                 String[] endpoint, String apiKey) {
