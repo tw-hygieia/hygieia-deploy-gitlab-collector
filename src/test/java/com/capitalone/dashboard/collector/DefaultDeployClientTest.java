@@ -9,7 +9,6 @@ import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.InjectMocks;
 import org.mockito.Matchers;
 import org.mockito.Mock;
 import org.mockito.runners.MockitoJUnitRunner;
@@ -44,7 +43,7 @@ public class DefaultDeployClientTest {
     @Before
     public void init() {
         when(restOperationsSupplier.get()).thenReturn(rest);
-        defaultDeployClient = new DefaultDeployClient(settings, restOperationsSupplier, null, null, null, null, null, null);
+        defaultDeployClient = new DefaultDeployClient(settings, restOperationsSupplier, null, null);
     }
     @Test
     public void testGetApplications() throws Exception {
