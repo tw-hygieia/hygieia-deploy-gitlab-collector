@@ -166,7 +166,8 @@ public class DefaultDeployClient implements DeployClient {
     private boolean isDeployed(String deployStatus) {
         //Skip deployments that are simply "created" or "cancelled".
         //Created deployments are never triggered. So there is no point in considering them
-        return deployStatus != null && !deployStatus.isEmpty() && deployStatus.equalsIgnoreCase("success");
+        return deployStatus != null && !deployStatus.isEmpty() &&
+                (deployStatus.equalsIgnoreCase("success") || deployStatus.equalsIgnoreCase("failed"));
     }
 
     @Override
@@ -211,14 +212,15 @@ public class DefaultDeployClient implements DeployClient {
             JSONObject deployableObj = (JSONObject) jsonObject.get("deployable");
             JSONObject runnerObj = (JSONObject) deployableObj.get("runner");
 
-            if (environmentObj == null || deployableObj == null) continue;
+            if (environmentObj == null) continue;
 
             String environmentID = str(environmentObj, "id");
 
             if (environmentID == null || (!environmentID.equals(environment.getId()))) continue;
             //Skip deployments that are simply "created" or "cancelled".
             //Created deployments are never triggered. So there is no point in considering them
-            if (!isDeployed(str(deployableObj, "status"))) continue;
+            String deployStatus = str(deployableObj, "status");
+            if (!isDeployed(deployStatus)) continue;
 
             DeployEnvResCompData deployData = new DeployEnvResCompData();
 
@@ -227,7 +229,7 @@ public class DefaultDeployClient implements DeployClient {
 
             deployData.setComponentID(str(deployableObj, "id"));
             deployData.setComponentName(application.getApplicationName());
-            deployData.setDeployed(true);
+            deployData.setDeployed(deployStatus.equalsIgnoreCase("success"));
             deployData.setAsOfDate(System.currentTimeMillis());
 
             if (runnerObj == null) {
