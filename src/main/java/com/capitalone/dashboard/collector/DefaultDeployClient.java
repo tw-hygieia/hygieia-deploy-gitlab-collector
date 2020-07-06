@@ -209,16 +209,15 @@ public class DefaultDeployClient implements DeployClient {
 
             JSONObject environmentObj = (JSONObject) jsonObject.get("environment");
             JSONObject deployableObj = (JSONObject) jsonObject.get("deployable");
-            JSONObject runnerObj = (JSONObject) deployableObj.get("runner");
-
             if (environmentObj == null || deployableObj == null) continue;
-
-            String environmentID = str(environmentObj, "id");
-
-            if (environmentID == null || (!environmentID.equals(environment.getId()))) continue;
             //Skip deployments that are simply "created" or "cancelled".
             //Created deployments are never triggered. So there is no point in considering them
             if (!isDeployed(str(deployableObj, "status"))) continue;
+
+            JSONObject runnerObj = (JSONObject) deployableObj.get("runner");
+            String environmentID = str(environmentObj, "id");
+
+            if (environmentID == null || (!environmentID.equals(environment.getId()))) continue;
 
             DeployEnvResCompData deployData = new DeployEnvResCompData();
 
