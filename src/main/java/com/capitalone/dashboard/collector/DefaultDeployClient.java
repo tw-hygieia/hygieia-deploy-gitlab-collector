@@ -163,12 +163,6 @@ public class DefaultDeployClient implements DeployClient {
     }
 
 
-    private boolean isDeployed(String deployStatus) {
-        //Skip deployments that are simply "created" or "cancelled".
-        //Created deployments are never triggered. So there is no point in considering them
-        return deployStatus != null && !deployStatus.isEmpty() && deployStatus.equalsIgnoreCase("success");
-    }
-
     @Override
     public List<DeployEnvResCompData> getEnvironmentResourceStatusData(
             DeployApplication application, Environment environment) {
@@ -212,9 +206,17 @@ public class DefaultDeployClient implements DeployClient {
             if (environmentObj == null || deployableObj == null) continue;
             //Skip deployments that are simply "created" or "cancelled".
             //Created deployments are never triggered. So there is no point in considering them
-            if (!isDeployed(str(deployableObj, "status"))) continue;
+            String deployStatus = str(deployableObj, "status");
+            //Skip deployments that are simply "created" or "cancelled".
+            //Created deployments are never triggered. So there is no point in considering them
+            if (deployStatus == null || deployStatus.isEmpty()) continue;
 
-            JSONObject runnerObj = (JSONObject) deployableObj.get("runner");
+            if (!(deployStatus.equalsIgnoreCase("success") ||
+                    (deployStatus.equalsIgnoreCase("failed")))) {
+                continue;
+            }
+            boolean isDeploymentSuccess = deployStatus.equalsIgnoreCase("success");
+
             String environmentID = str(environmentObj, "id");
 
             if (environmentID == null || (!environmentID.equals(environment.getId()))) continue;
@@ -228,26 +230,21 @@ public class DefaultDeployClient implements DeployClient {
             deployData.setComponentName(application.getApplicationName());
             deployData.setDeployed(true);
             deployData.setAsOfDate(System.currentTimeMillis());
-
-            if (runnerObj == null) {
-                deployData.setOnline(true);
-                deployData.setResourceName("gitlab-runner");
-            } else {
-                deployData.setOnline(bool(runnerObj, "online"));
-                deployData.setResourceName(str(runnerObj, "name"));
-            }
+            deployData.setOnline(true);
+            deployData.setResourceName("gitlab-runner");
 
             JSONObject environmentObject = (JSONObject) jsonObject.get("environment");
-
             long deployTimeToConsider = getTime(deployableObj, "finished_at");
+            deployData.setDeployTime(deployTimeToConsider);
+            environmentStatuses.add(deployData);
+            if (!isDeploymentSuccess)
+                continue;
             PipelineCommit pipelineCommit = getPipelineCommit(application, deployableObj, environmentObject,
                     deployTimeToConsider == 0 ? getTime(deployableObj, "created_at") : deployTimeToConsider);
             if (pipelineCommit != null) {
                 allPipelineCommits.add(pipelineCommit);
             }
-            environmentStatuses.add(deployData);
         }
-
         pipelineCommitProcessor.processPipelineCommits(new ArrayList<>(allPipelineCommits),
                 application);
         return environmentStatuses;
