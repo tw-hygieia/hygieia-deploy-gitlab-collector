@@ -170,6 +170,7 @@ public class DeployCollectorTask extends CollectorTask<DeployCollector> {
 
             component.setEnvironmentName(environment.getName());
             component.setAsOfDate(data.getAsOfDate());
+            component.setDeployTime(data.getDeployTime());
             String environmentURL = StringUtils.removeEnd(
                     application.getInstanceUrl(), "/")
                     + "/api/v4/projects/"+application.getApplicationId()+"/environments/" + environment.getId();

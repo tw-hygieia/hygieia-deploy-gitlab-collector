@@ -14,7 +14,8 @@ public class DeployEnvResCompData {
     private String resourceName;
     private String parentAgentName;
     private boolean online;
-    
+    private long deployTime;
+
 	public ObjectId getCollectorItemId() {
 		return collectorItemId;
 	}
@@ -80,5 +81,13 @@ public class DeployEnvResCompData {
 	}
 	public void setOnline(boolean online) {
 		this.online = online;
+	}
+
+	public long getDeployTime() {
+		return deployTime;
+	}
+
+	public void setDeployTime(long deployTime) {
+		this.deployTime = deployTime;
 	}
 }
