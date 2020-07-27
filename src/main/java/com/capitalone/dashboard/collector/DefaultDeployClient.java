@@ -25,6 +25,7 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.stream.Stream;
 
 import static com.sun.activation.registries.LogSupport.log;
 
@@ -195,7 +196,7 @@ public class DefaultDeployClient implements DeployClient {
         if (allDeploymentJSON == null || allDeploymentJSON.size() == 0) {
             return Collections.emptyList();
         }
-        LinkedHashSet<PipelineCommit> allPipelineCommits = new LinkedHashSet<>();
+        List<PipelineCommit> allPipelineCommits = new ArrayList<>();
         List<DeployEnvResCompData> environmentStatuses = new ArrayList<>();
         for (Object deployment : allDeploymentJSON) {
             JSONObject jsonObject = (JSONObject) deployment;
@@ -241,11 +242,29 @@ public class DefaultDeployClient implements DeployClient {
                 continue;
             PipelineCommit pipelineCommit = getPipelineCommit(application, deployableObj, environmentObject,
                     deployTimeToConsider == 0 ? getTime(deployableObj, "created_at") : deployTimeToConsider);
-            if (pipelineCommit != null) {
-                allPipelineCommits.add(pipelineCommit);
+            if (pipelineCommit == null) {
+                continue;
             }
+            //If commit doesn't exist, add it
+            if (allPipelineCommits.stream().noneMatch(pc -> pc.getScmRevisionNumber().equalsIgnoreCase(pipelineCommit.getScmRevisionNumber()))) {
+                allPipelineCommits.add(pipelineCommit);
+            } else {
+                //If the incoming pipelineCommit has a smaller timestamp, remove the original one and add the incoming one
+                Optional<PipelineCommit> existingPipelineCommit = allPipelineCommits.stream().filter(pc ->
+                        pc.getScmRevisionNumber().equalsIgnoreCase(pipelineCommit.getScmRevisionNumber()) &&
+                                pc.getTimestamp() > pipelineCommit.getTimestamp()).findFirst();
+                if (existingPipelineCommit.isPresent()) {
+                    PipelineCommit existingPc = existingPipelineCommit.get();
+                    LOGGER.info("Replacing timestamp {} with {} for commit {}", existingPc.getTimestamp(),
+                            pipelineCommit.getTimestamp(),
+                            existingPc.getScmRevisionNumber());
+                    allPipelineCommits.remove(existingPc);
+                    allPipelineCommits.add(pipelineCommit);
+                }
+            }
+            allPipelineCommits.add(pipelineCommit);
         }
-        pipelineCommitProcessor.processPipelineCommits(new ArrayList<>(allPipelineCommits),
+        pipelineCommitProcessor.processPipelineCommits(allPipelineCommits,
                 application);
         return environmentStatuses;
     }
